@@ -23,7 +23,6 @@ MODEL_PATH = Path("art_price_model.joblib")
 SOURCE_INFO_PATH = DATA_DIR / "source_info.json"
 ARTIST_INFO_PATH = DATA_DIR / "artist_public_info.csv"
 VALID_IMAGE_URLS_PATH = DATA_DIR / "valid_image_urls.csv"
-DEMO_DATA_PATH = DATA_DIR / "demo_art_auction_prices.csv"
 METADATA_CSV_NAMES = {ARTIST_INFO_PATH.name, VALID_IMAGE_URLS_PATH.name}
 DEFAULT_KAGGLE_SLUGS = ["amaboh/masterworks-top-10-1m-artists-20182022"]
 PRICE_CANDIDATES = ["price", "price_($)", "sale_price", "sold_price", "hammer_price", "realized_price", "auction_price_estimate", "成交价"]
@@ -244,54 +243,16 @@ def try_download_kaggle_dataset():
     return False
 
 
-def create_demo_dataset():
-    DATA_DIR.mkdir(exist_ok=True)
-    rows = [
-        ("Avery Stone", "Blue Window Study", 2017, "Oil on canvas", "60 x 80 cm", 12000, 18000, "Painting", 21000),
-        ("Mina Vale", "Quiet Geometry", 2019, "Acrylic on panel", "45 x 45 cm", 3000, 5000, "Painting", 4700),
-        ("Jonas Reed", "Night Ferry", 2012, "Photograph", "30 x 40 cm", 1500, 2500, "Photography", 1900),
-        ("Lena Ortiz", "Red Orchard", 2020, "Oil on linen", "100 x 120 cm", 22000, 30000, "Painting", 34500),
-        ("Hugo Park", "Folded Signal", 2015, "Mixed media", "70 x 50 cm", 5000, 8000, "Mixed Media", 7600),
-        ("Sara Lin", "Porcelain Moon", 2018, "Ceramic", "25 x 18 x 18 cm", 2500, 3500, "Sculpture", 4100),
-        ("Noah Bell", "Harbor Lines", 2011, "Watercolor", "35 x 50 cm", 900, 1400, "Works on Paper", 1300),
-        ("Iris Chen", "Green Algorithm", 2021, "Digital print", "50 x 70 cm", 2000, 3000, "Digital Art", 5200),
-        ("Amal Wright", "Small Weather", 2016, "Ink on paper", "28 x 35 cm", 700, 1200, "Works on Paper", 950),
-        ("Theo Grant", "Bronze Interval", 2010, "Bronze", "42 x 22 x 18 cm", 9000, 13000, "Sculpture", 15600),
-        ("Avery Stone", "Yellow Room", 2018, "Oil on canvas", "80 x 100 cm", 18000, 26000, "Painting", 28500),
-        ("Mina Vale", "Grid for Rain", 2020, "Acrylic on panel", "60 x 60 cm", 4500, 7000, "Painting", 6800),
-        ("Jonas Reed", "Station Light", 2014, "Photograph", "40 x 60 cm", 2200, 3200, "Photography", 2900),
-        ("Lena Ortiz", "Black Garden", 2022, "Oil on linen", "140 x 160 cm", 35000, 50000, "Painting", 62000),
-        ("Hugo Park", "Tape Drawing", 2017, "Mixed media", "90 x 60 cm", 7000, 10000, "Mixed Media", 9800),
-        ("Sara Lin", "White Vessel", 2019, "Ceramic", "32 x 24 x 24 cm", 4000, 6000, "Sculpture", 7300),
-        ("Noah Bell", "Morning Pier", 2013, "Watercolor", "40 x 55 cm", 1200, 1800, "Works on Paper", 1600),
-        ("Iris Chen", "Synthetic Bloom", 2022, "Digital print", "80 x 100 cm", 3500, 6000, "Digital Art", 8800),
-        ("Amal Wright", "Field Notes", 2018, "Ink on paper", "30 x 42 cm", 1000, 1500, "Works on Paper", 1450),
-        ("Theo Grant", "Steel Echo", 2015, "Steel", "65 x 30 x 28 cm", 14000, 20000, "Sculpture", 23500),
-        ("Avery Stone", "Cloud Cabinet", 2020, "Oil on canvas", "120 x 150 cm", 30000, 45000, "Painting", 54000),
-        ("Mina Vale", "Soft Diagram", 2021, "Acrylic on panel", "75 x 90 cm", 8000, 12000, "Painting", 11800),
-        ("Jonas Reed", "Blue Platform", 2018, "Photograph", "60 x 90 cm", 3500, 5500, "Photography", 5100),
-        ("Lena Ortiz", "Silver Field", 2019, "Oil on linen", "90 x 110 cm", 26000, 38000, "Painting", 33400),
-        ("Hugo Park", "Signal Stack", 2021, "Mixed media", "110 x 80 cm", 11000, 16000, "Mixed Media", 18700),
-        ("Sara Lin", "Ash Bowl", 2020, "Ceramic", "20 x 30 x 30 cm", 2800, 4200, "Sculpture", 3600),
-        ("Noah Bell", "Low Tide", 2015, "Watercolor", "50 x 65 cm", 1800, 2600, "Works on Paper", 2400),
-        ("Iris Chen", "Pixel Garden", 2023, "Digital print", "100 x 120 cm", 5000, 8500, "Digital Art", 12600),
-        ("Amal Wright", "Black Script", 2020, "Ink on paper", "45 x 60 cm", 1800, 2800, "Works on Paper", 3200),
-        ("Theo Grant", "Copper Line", 2018, "Copper", "80 x 40 x 35 cm", 18000, 25000, "Sculpture", 29200),
-    ]
-    df = pd.DataFrame(rows, columns=["artist", "title", "year", "medium", "dimensions", "estimate_low", "estimate_high", "category", "sale_price"])
-    df["auction_house"] = "Demo Auction"
-    df["date"] = "2024"
-    df.to_csv(DEMO_DATA_PATH, index=False)
-    write_source_info("demo", "Using a small built-in educational demo dataset so the game can run immediately.")
-
-
 def ensure_data_available():
     if artwork_csv_files():
         if not SOURCE_INFO_PATH.exists():
             write_source_info("local_csv", "Using artwork CSV file(s) found in the data/ folder.")
         return
     if not try_download_kaggle_dataset():
-        create_demo_dataset()
+        write_source_info(
+            "missing_data",
+            "没有生成编造数据。Kaggle 自动下载失败，请在侧边栏上传公开艺术品拍卖 CSV，或在 Streamlit Cloud 配置可访问的 Kaggle 数据源。",
+        )
 
 
 def load_art_data():
@@ -303,7 +264,7 @@ def load_art_data():
         frame["source_file"] = csv_file.name
         frames.append(frame)
     if not frames:
-        raise FileNotFoundError("No usable artwork CSV file found in data/.")
+        raise FileNotFoundError("No usable public artwork CSV file found in data/.")
     return merge_artist_public_info(enrich_artwork_features(pd.concat(frames, ignore_index=True, sort=False)))
 
 

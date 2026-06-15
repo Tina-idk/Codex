@@ -205,11 +205,34 @@ def filter_image_records(df):
     return df.reset_index(drop=True)
 
 
+def copy_csvs_from_directory(source_dir, prefix):
+    copied = 0
+    for csv_file in Path(source_dir).rglob("*.csv"):
+        target = DATA_DIR / f"{prefix}_{csv_file.name}"
+        shutil.copy2(csv_file, target)
+        copied += 1
+    return copied
+
+
 def try_download_kaggle_dataset():
     DATA_DIR.mkdir(exist_ok=True)
     slugs = [os.getenv("KAGGLE_DATASET_SLUG")] if os.getenv("KAGGLE_DATASET_SLUG") else []
     slugs.extend(DEFAULT_KAGGLE_SLUGS)
+    errors = []
+
     for slug in slugs:
+        try:
+            import kagglehub
+
+            downloaded_dir = Path(kagglehub.dataset_download(slug))
+            copied = copy_csvs_from_directory(downloaded_dir, "kaggle")
+            if copied:
+                write_source_info("kaggle", f"Automatically downloaded {copied} CSV file(s) from Kaggle dataset {slug}.", slug)
+                return True, f"Downloaded Kaggle dataset with kagglehub: {slug}"
+            errors.append(f"{slug}: kagglehub did not return any CSV files")
+        except Exception as error:
+            errors.append(f"{slug}: kagglehub failed: {error}")
+
         try:
             zip_path = DATA_DIR / f"{slug.replace('/', '_')}.zip"
             extract_dir = DATA_DIR / f"kaggle_{slug.replace('/', '_')}"
@@ -219,28 +242,15 @@ def try_download_kaggle_dataset():
             extract_dir.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(zip_path) as archive:
                 archive.extractall(extract_dir)
-            copied = 0
-            for csv_file in extract_dir.rglob("*.csv"):
-                shutil.copy2(csv_file, DATA_DIR / f"kaggle_{csv_file.name}")
-                copied += 1
+            copied = copy_csvs_from_directory(extract_dir, "kaggle")
             if copied:
                 write_source_info("kaggle", f"Automatically downloaded {copied} CSV file(s) from Kaggle dataset {slug}.", slug)
-                return True
-        except Exception:
-            try:
-                import kagglehub
+                return True, f"Downloaded Kaggle dataset through Kaggle API URL: {slug}"
+            errors.append(f"{slug}: direct download did not contain CSV files")
+        except Exception as error:
+            errors.append(f"{slug}: direct download failed: {error}")
 
-                downloaded_dir = Path(kagglehub.dataset_download(slug))
-                copied = 0
-                for csv_file in downloaded_dir.rglob("*.csv"):
-                    shutil.copy2(csv_file, DATA_DIR / f"kaggle_{csv_file.name}")
-                    copied += 1
-                if copied:
-                    write_source_info("kaggle", f"Automatically downloaded {copied} CSV file(s) from Kaggle dataset {slug}.", slug)
-                    return True
-            except Exception:
-                continue
-    return False
+    return False, "; ".join(errors)
 
 
 def ensure_data_available():
@@ -248,11 +258,20 @@ def ensure_data_available():
         if not SOURCE_INFO_PATH.exists():
             write_source_info("local_csv", "Using artwork CSV file(s) found in the data/ folder.")
         return
-    if not try_download_kaggle_dataset():
-        write_source_info(
-            "missing_data",
-            "没有生成编造数据。Kaggle 自动下载失败，请在侧边栏上传公开艺术品拍卖 CSV，或在 Streamlit Cloud 配置可访问的 Kaggle 数据源。",
-        )
+
+    downloaded, message = try_download_kaggle_dataset()
+    if downloaded:
+        return
+
+    write_source_info(
+        "kaggle_download_failed",
+        f"Kaggle 数据集必须下载成功才能启动游戏。下载失败详情：{message}",
+    )
+    raise RuntimeError(
+        "Kaggle 数据集必须下载成功才能启动游戏。"
+        "请确认 Streamlit Cloud 可以访问 Kaggle，并且 requirements.txt 已安装 kagglehub。"
+        f"下载失败详情：{message}"
+    )
 
 
 def load_art_data():
@@ -264,7 +283,7 @@ def load_art_data():
         frame["source_file"] = csv_file.name
         frames.append(frame)
     if not frames:
-        raise FileNotFoundError("No usable public artwork CSV file found in data/.")
+        raise FileNotFoundError("No usable public artwork CSV file found in data/ after Kaggle download.")
     return merge_artist_public_info(enrich_artwork_features(pd.concat(frames, ignore_index=True, sort=False)))
 
 

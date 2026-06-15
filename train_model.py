@@ -24,13 +24,24 @@ SOURCE_INFO_PATH = DATA_DIR / "source_info.json"
 ARTIST_INFO_PATH = DATA_DIR / "artist_public_info.csv"
 VALID_IMAGE_URLS_PATH = DATA_DIR / "valid_image_urls.csv"
 DEMO_DATA_PATH = DATA_DIR / "demo_art_auction_prices.csv"
+METADATA_CSV_NAMES = {ARTIST_INFO_PATH.name, VALID_IMAGE_URLS_PATH.name}
 DEFAULT_KAGGLE_SLUGS = ["amaboh/masterworks-top-10-1m-artists-20182022"]
 PRICE_CANDIDATES = ["price", "price_($)", "sale_price", "sold_price", "hammer_price", "realized_price", "auction_price_estimate", "成交价"]
-FEATURE_CANDIDATES = ["artist", "title", "description", "purchase_price", "gross_appreciation_period", "artist_name", "artist_birth_year", "artist_death_year", "artwork_year", "holding_period_years"]
+FEATURE_CANDIDATES = ["artist", "title", "description", "year", "medium", "size", "dimensions", "purchase_price", "estimate_low", "estimate_high", "category", "auction_house", "date", "gross_appreciation_period", "artist_name", "artist_birth_year", "artist_death_year", "artwork_year", "holding_period_years", "artist_country", "artist_movement"]
 
 
 def normalize_column_name(name):
     return str(name).strip().lower().replace(" ", "_")
+
+
+def artwork_csv_files():
+    if not DATA_DIR.exists():
+        return []
+    return sorted(
+        path
+        for path in DATA_DIR.glob("*.csv")
+        if not path.name.startswith(".") and path.name not in METADATA_CSV_NAMES
+    )
 
 
 def clean_price(value):
@@ -84,9 +95,9 @@ def parse_artist_year(value, marker):
 
 
 def parse_artwork_year(row):
-    for col in ["url", "title"]:
+    for col in ["url", "title", "year"]:
         if col in row and pd.notna(row[col]):
-            match = re.search(r"(?:-|/)(1[5-9]\d{2}|20\d{2})(?:-|_|/|$)", str(row[col]))
+            match = re.search(r"(1[5-9]\d{2}|20\d{2})", str(row[col]))
             if match:
                 return float(match.group(1))
     return np.nan
@@ -94,7 +105,10 @@ def parse_artwork_year(row):
 
 def write_source_info(source_type, message, dataset_slug=None):
     DATA_DIR.mkdir(exist_ok=True)
-    SOURCE_INFO_PATH.write_text(json.dumps({"source_type": source_type, "message": message, "dataset_slug": dataset_slug}, indent=2), encoding="utf-8")
+    SOURCE_INFO_PATH.write_text(
+        json.dumps({"source_type": source_type, "message": message, "dataset_slug": dataset_slug}, indent=2),
+        encoding="utf-8",
+    )
 
 
 def read_source_info():
@@ -106,8 +120,9 @@ def read_source_info():
 def find_first_existing_column(columns, candidates):
     lower_to_original = {normalize_column_name(col): col for col in columns}
     for candidate in candidates:
-        if normalize_column_name(candidate) in lower_to_original:
-            return lower_to_original[normalize_column_name(candidate)]
+        normalized = normalize_column_name(candidate)
+        if normalized in lower_to_original:
+            return lower_to_original[normalized]
     return None
 
 
@@ -126,7 +141,7 @@ def merge_artist_public_info(df):
     artist_info = artist_info.copy()
     df["_artist_key"] = df["artist_name"].apply(normalize_artist_key)
     artist_info["_artist_key"] = artist_info["artist_name"].apply(normalize_artist_key)
-    merged = df.merge(artist_info.drop(columns=["artist_name"]), on="_artist_key", how="left")
+    merged = df.merge(artist_info.drop(columns=["artist_name"], errors="ignore"), on="_artist_key", how="left")
     return merged.drop(columns=["_artist_key"])
 
 
@@ -136,7 +151,7 @@ def enrich_artwork_features(df):
         df["artist_name"] = df["artist"].apply(parse_artist_name)
         df["artist_birth_year"] = df["artist"].apply(lambda value: parse_artist_year(value, "b"))
         df["artist_death_year"] = df["artist"].apply(lambda value: parse_artist_year(value, "d"))
-    if "url" in df.columns or "title" in df.columns:
+    if any(col in df.columns for col in ["url", "title", "year"]):
         df["artwork_year"] = df.apply(parse_artwork_year, axis=1)
     if "gross_appreciation_period" in df.columns:
         df["holding_period_years"] = df["gross_appreciation_period"].apply(parse_first_number)
@@ -151,7 +166,8 @@ def image_url_works(url):
         try:
             request = urllib.request.Request(str(url), headers=headers, method=method)
             with urllib.request.urlopen(request, timeout=6) as response:
-                if response.status < 400 and response.headers.get("content-type", "").lower().startswith("image/"):
+                content_type = response.headers.get("content-type", "").lower()
+                if response.status < 400 and content_type.startswith("image/"):
                     return True
         except Exception:
             continue
@@ -161,12 +177,13 @@ def image_url_works(url):
 def filter_valid_image_urls(df):
     if "image_url" not in df.columns:
         return df
+    DATA_DIR.mkdir(exist_ok=True)
     if VALID_IMAGE_URLS_PATH.exists():
-        valid_urls = set(pd.read_csv(VALID_IMAGE_URLS_PATH)["image_url"].astype(str))
+        valid_urls = set(pd.read_csv(VALID_IMAGE_URLS_PATH)["image_url"].dropna().astype(str))
         return df[df["image_url"].astype(str).isin(valid_urls)].reset_index(drop=True)
     urls = sorted(set(df["image_url"].dropna().astype(str)))
     valid_urls = []
-    with ThreadPoolExecutor(max_workers=24) as executor:
+    with ThreadPoolExecutor(max_workers=16) as executor:
         future_to_url = {executor.submit(image_url_works, url): url for url in urls}
         for future in as_completed(future_to_url):
             if future.result():
@@ -213,6 +230,7 @@ def try_download_kaggle_dataset():
         except Exception:
             try:
                 import kagglehub
+
                 downloaded_dir = Path(kagglehub.dataset_download(slug))
                 copied = 0
                 for csv_file in downloaded_dir.rglob("*.csv"):
@@ -228,15 +246,49 @@ def try_download_kaggle_dataset():
 
 def create_demo_dataset():
     DATA_DIR.mkdir(exist_ok=True)
-    rows = [("Demo Artist", "Blue Study", 2020, "Oil on canvas", "$10K", "$25K", "12 years") for _ in range(30)]
-    pd.DataFrame(rows, columns=["artist", "title", "year", "description", "purchase_price", "sale_price", "gross_appreciation_period"]).to_csv(DEMO_DATA_PATH, index=False)
-    write_source_info("demo", "Using a small built-in educational demo dataset.")
+    rows = [
+        ("Avery Stone", "Blue Window Study", 2017, "Oil on canvas", "60 x 80 cm", 12000, 18000, "Painting", 21000),
+        ("Mina Vale", "Quiet Geometry", 2019, "Acrylic on panel", "45 x 45 cm", 3000, 5000, "Painting", 4700),
+        ("Jonas Reed", "Night Ferry", 2012, "Photograph", "30 x 40 cm", 1500, 2500, "Photography", 1900),
+        ("Lena Ortiz", "Red Orchard", 2020, "Oil on linen", "100 x 120 cm", 22000, 30000, "Painting", 34500),
+        ("Hugo Park", "Folded Signal", 2015, "Mixed media", "70 x 50 cm", 5000, 8000, "Mixed Media", 7600),
+        ("Sara Lin", "Porcelain Moon", 2018, "Ceramic", "25 x 18 x 18 cm", 2500, 3500, "Sculpture", 4100),
+        ("Noah Bell", "Harbor Lines", 2011, "Watercolor", "35 x 50 cm", 900, 1400, "Works on Paper", 1300),
+        ("Iris Chen", "Green Algorithm", 2021, "Digital print", "50 x 70 cm", 2000, 3000, "Digital Art", 5200),
+        ("Amal Wright", "Small Weather", 2016, "Ink on paper", "28 x 35 cm", 700, 1200, "Works on Paper", 950),
+        ("Theo Grant", "Bronze Interval", 2010, "Bronze", "42 x 22 x 18 cm", 9000, 13000, "Sculpture", 15600),
+        ("Avery Stone", "Yellow Room", 2018, "Oil on canvas", "80 x 100 cm", 18000, 26000, "Painting", 28500),
+        ("Mina Vale", "Grid for Rain", 2020, "Acrylic on panel", "60 x 60 cm", 4500, 7000, "Painting", 6800),
+        ("Jonas Reed", "Station Light", 2014, "Photograph", "40 x 60 cm", 2200, 3200, "Photography", 2900),
+        ("Lena Ortiz", "Black Garden", 2022, "Oil on linen", "140 x 160 cm", 35000, 50000, "Painting", 62000),
+        ("Hugo Park", "Tape Drawing", 2017, "Mixed media", "90 x 60 cm", 7000, 10000, "Mixed Media", 9800),
+        ("Sara Lin", "White Vessel", 2019, "Ceramic", "32 x 24 x 24 cm", 4000, 6000, "Sculpture", 7300),
+        ("Noah Bell", "Morning Pier", 2013, "Watercolor", "40 x 55 cm", 1200, 1800, "Works on Paper", 1600),
+        ("Iris Chen", "Synthetic Bloom", 2022, "Digital print", "80 x 100 cm", 3500, 6000, "Digital Art", 8800),
+        ("Amal Wright", "Field Notes", 2018, "Ink on paper", "30 x 42 cm", 1000, 1500, "Works on Paper", 1450),
+        ("Theo Grant", "Steel Echo", 2015, "Steel", "65 x 30 x 28 cm", 14000, 20000, "Sculpture", 23500),
+        ("Avery Stone", "Cloud Cabinet", 2020, "Oil on canvas", "120 x 150 cm", 30000, 45000, "Painting", 54000),
+        ("Mina Vale", "Soft Diagram", 2021, "Acrylic on panel", "75 x 90 cm", 8000, 12000, "Painting", 11800),
+        ("Jonas Reed", "Blue Platform", 2018, "Photograph", "60 x 90 cm", 3500, 5500, "Photography", 5100),
+        ("Lena Ortiz", "Silver Field", 2019, "Oil on linen", "90 x 110 cm", 26000, 38000, "Painting", 33400),
+        ("Hugo Park", "Signal Stack", 2021, "Mixed media", "110 x 80 cm", 11000, 16000, "Mixed Media", 18700),
+        ("Sara Lin", "Ash Bowl", 2020, "Ceramic", "20 x 30 x 30 cm", 2800, 4200, "Sculpture", 3600),
+        ("Noah Bell", "Low Tide", 2015, "Watercolor", "50 x 65 cm", 1800, 2600, "Works on Paper", 2400),
+        ("Iris Chen", "Pixel Garden", 2023, "Digital print", "100 x 120 cm", 5000, 8500, "Digital Art", 12600),
+        ("Amal Wright", "Black Script", 2020, "Ink on paper", "45 x 60 cm", 1800, 2800, "Works on Paper", 3200),
+        ("Theo Grant", "Copper Line", 2018, "Copper", "80 x 40 x 35 cm", 18000, 25000, "Sculpture", 29200),
+    ]
+    df = pd.DataFrame(rows, columns=["artist", "title", "year", "medium", "dimensions", "estimate_low", "estimate_high", "category", "sale_price"])
+    df["auction_house"] = "Demo Auction"
+    df["date"] = "2024"
+    df.to_csv(DEMO_DATA_PATH, index=False)
+    write_source_info("demo", "Using a small built-in educational demo dataset so the game can run immediately.")
 
 
 def ensure_data_available():
-    if list(DATA_DIR.glob("*.csv")):
+    if artwork_csv_files():
         if not SOURCE_INFO_PATH.exists():
-            write_source_info("local_csv", "Using CSV file(s) found in the data/ folder.")
+            write_source_info("local_csv", "Using artwork CSV file(s) found in the data/ folder.")
         return
     if not try_download_kaggle_dataset():
         create_demo_dataset()
@@ -245,15 +297,13 @@ def ensure_data_available():
 def load_art_data():
     ensure_data_available()
     frames = []
-    for csv_file in sorted(DATA_DIR.glob("*.csv")):
-        if csv_file.name in {"artist_public_info.csv", "valid_image_urls.csv"}:
-            continue
+    for csv_file in artwork_csv_files():
         frame = pd.read_csv(csv_file)
         frame.columns = [normalize_column_name(col) for col in frame.columns]
         frame["source_file"] = csv_file.name
         frames.append(frame)
     if not frames:
-        raise FileNotFoundError("No usable CSV file found in data/.")
+        raise FileNotFoundError("No usable artwork CSV file found in data/.")
     return merge_artist_public_info(enrich_artwork_features(pd.concat(frames, ignore_index=True, sort=False)))
 
 
@@ -282,7 +332,7 @@ def onehot_preprocessor(X):
     numeric, categorical = split_feature_types(X)
     return ColumnTransformer([
         ("num", Pipeline([("imputer", SimpleImputer(strategy="median"))]), numeric),
-        ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", OneHotEncoder(handle_unknown="ignore", min_frequency=3))]), categorical),
+        ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", OneHotEncoder(handle_unknown="ignore"))]), categorical),
     ])
 
 
@@ -300,10 +350,9 @@ def log_target(regressor):
 
 def candidate_models(X):
     return {
-        "random_forest_raw_target": Pipeline([("preprocessor", onehot_preprocessor(X)), ("model", RandomForestRegressor(n_estimators=300, min_samples_leaf=2, random_state=42, n_jobs=-1))]),
-        "random_forest_log_target": log_target(Pipeline([("preprocessor", onehot_preprocessor(X)), ("model", RandomForestRegressor(n_estimators=300, min_samples_leaf=2, random_state=42, n_jobs=-1))])),
-        "extra_trees_log_target": log_target(Pipeline([("preprocessor", onehot_preprocessor(X)), ("model", ExtraTreesRegressor(n_estimators=500, min_samples_leaf=2, random_state=42, n_jobs=-1))])),
-        "hist_gradient_boosting_log_target": log_target(Pipeline([("preprocessor", ordinal_preprocessor(X)), ("model", HistGradientBoostingRegressor(max_iter=350, learning_rate=0.035, l2_regularization=0.03, min_samples_leaf=8, random_state=42))])),
+        "random_forest_log_target": log_target(Pipeline([("preprocessor", onehot_preprocessor(X)), ("model", RandomForestRegressor(n_estimators=250, min_samples_leaf=2, random_state=42, n_jobs=-1))])),
+        "extra_trees_log_target": log_target(Pipeline([("preprocessor", onehot_preprocessor(X)), ("model", ExtraTreesRegressor(n_estimators=300, min_samples_leaf=2, random_state=42, n_jobs=-1))])),
+        "hist_gradient_boosting_log_target": log_target(Pipeline([("preprocessor", ordinal_preprocessor(X)), ("model", HistGradientBoostingRegressor(max_iter=250, learning_rate=0.04, l2_regularization=0.03, min_samples_leaf=8, random_state=42))])),
     }
 
 

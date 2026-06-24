@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.DS_Store
+.streamlit/
+
+# Generated data/model artifacts
+art_price_model.joblib
+data/kaggle_*.csv
+data/*.zip
+data/kaggle_*/
+data/demo_art_auction_prices.csv
+data/wikipedia_expensive_paintings.csv
+data/source_info.json
+data/valid_image_urls.csv
+
+# Local uploads
+data/uploaded_*.csv
